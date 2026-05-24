@@ -576,7 +576,7 @@ function ManagePage({ activities, settings, setSettings, setActiveId, exportExce
             <p className="mt-1 text-sm">請先到「設定」頁設定密碼；完成後，刪除活動、清空資料及還原資料等高風險操作才可使用。</p>
           </div>
         </div>
-      )
+      )}
       <div className="grid gap-3 rounded-[2rem] bg-white p-4 shadow-soft md:grid-cols-4">
         <div className="relative md:col-span-2">
           <Search className="absolute left-4 top-3.5 text-slate-400" size={18} />
