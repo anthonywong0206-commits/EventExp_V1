@@ -219,18 +219,22 @@ function App() {
   }
 
   async function requirePassword(action) {
+    // 首次使用需先到設定頁設置密碼，才可啟動刪除及清空等高風險功能。
     if (!settings.passwordHash) {
-      flash('請先到設定頁設定密碼')
+      flash('首次使用需設置密碼才能啟動刪除功能')
       setPage('settings')
       return false
     }
+
     const input = window.prompt('此操作需要密碼，請輸入密碼：')
     if (!input) return false
+
     const hash = await sha256(input)
     if (hash !== settings.passwordHash) {
       flash('密碼錯誤')
       return false
     }
+
     return action()
   }
 
@@ -514,6 +518,15 @@ function ManagePage({ activities, settings, setSettings, setActiveId, exportExce
   return (
     <div className="space-y-5">
       <HeaderBlock title="活動管理" subtitle="查看、排序、搜尋及匯出活動支出紀錄。" />
+      {!settings.passwordHash && (
+        <div className="flex items-start gap-3 rounded-3xl border border-amber-200 bg-amber-50 p-4 text-amber-800 shadow-sm">
+          <ShieldCheck className="mt-0.5 shrink-0" size={20} />
+          <div>
+            <p className="font-black">首次使用需設置密碼才能啟動刪除功能</p>
+            <p className="mt-1 text-sm">請先到「設定」頁設定密碼；完成後，刪除活動、清空資料及還原資料等高風險操作才可使用。</p>
+          </div>
+        </div>
+      )
       <div className="grid gap-3 rounded-[2rem] bg-white p-4 shadow-soft md:grid-cols-4">
         <div className="relative md:col-span-2">
           <Search className="absolute left-4 top-3.5 text-slate-400" size={18} />
@@ -564,7 +577,7 @@ function ManagePage({ activities, settings, setSettings, setActiveId, exportExce
                 <button onClick={() => setActiveId(activity.id)} className="btn-primary"><Eye size={16} /> 查看</button>
                 <button onClick={() => exportExcel(activity)} className="btn-muted"><Download size={16} /> Excel</button>
                 <button onClick={() => exportPDF(activity)} className="btn-muted"><FileText size={16} /> PDF</button>
-                <button onClick={() => deleteActivity(activity.id)} className="btn-danger"><Trash2 size={16} /> 刪除</button>
+                <button title={!settings.passwordHash ? '首次使用需設置密碼才能啟動刪除功能' : '刪除活動'} onClick={(e) => { e.preventDefault(); e.stopPropagation(); deleteActivity(activity.id) }} className="btn-danger"><Trash2 size={16} /> 刪除</button>
               </div>
             </article>
           )
@@ -862,7 +875,7 @@ function SettingsPage({ settings, setSettings, activities, setActivities, requir
 
       <section className="rounded-[2rem] bg-white p-5 shadow-soft">
         <h3 className="mb-2 text-xl font-black">密碼管理</h3>
-        <p className="mb-4 text-sm text-slate-500">{settings.passwordHash ? '已設定密碼。可在此輸入新密碼更改。' : '尚未設定密碼，請先設定以保護高風險操作。'}</p>
+        <p className="mb-4 text-sm text-slate-500">{settings.passwordHash ? '已設定密碼。可在此輸入新密碼更改。' : '首次使用需設置密碼才能啟動刪除功能。設定後才可刪除活動、清空資料或還原資料。'}</p>
         <div className="flex flex-col gap-2 md:flex-row">
           <input type="password" className={inputClass()} placeholder="輸入新密碼" value={password} onChange={e => setPassword(e.target.value)} />
           <button onClick={savePassword} className="btn-primary whitespace-nowrap"><ShieldCheck size={16} /> 儲存密碼</button>
