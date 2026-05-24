@@ -533,9 +533,99 @@ function ActionCard({ icon, title, text }) {
   )
 }
 
+
+function EditActivityModal({ activity, settings, onClose, onSave, activities }) {
+  const [editForm, setEditForm] = useState({
+    activityName: activity.activityName || '',
+    activityCode: activity.activityCode || '',
+    startDate: activity.startDate || '',
+    endDate: activity.endDate || '',
+    budget: activity.budget || '',
+    category: activity.category || (settings.activityCategories[0] || '社區活動'),
+    personInCharge: activity.personInCharge || '',
+    advanceApplied: activity.advanceApplied || '沒有'
+  })
+
+  function submit(e) {
+    e.preventDefault()
+    const required = ['activityName', 'activityCode', 'startDate', 'endDate', 'budget', 'category', 'personInCharge']
+    if (required.some(k => !String(editForm[k]).trim())) {
+      alert('請填妥所有必填欄位')
+      return
+    }
+    const duplicated = activities.some(a =>
+      a.id !== activity.id &&
+      String(a.activityCode).trim().toLowerCase() === String(editForm.activityCode).trim().toLowerCase()
+    )
+    if (duplicated) {
+      alert('活動編號已存在，請使用另一個編號')
+      return
+    }
+    onSave({
+      ...activity,
+      ...editForm,
+      budget: Number(editForm.budget),
+      updatedAt: new Date().toISOString()
+    })
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 p-0 backdrop-blur-sm md:items-center md:p-6">
+      <div className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-t-[2rem] bg-white p-5 shadow-soft md:rounded-[2rem] md:p-8">
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-bold text-blue-600">Edit Activity</p>
+            <h3 className="text-2xl font-black text-slate-950">更改活動內容</h3>
+            <p className="mt-1 text-sm text-slate-500">只會更新活動基本資料，原有支出紀錄及已上傳 PDF 會保留。</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-2xl bg-slate-100 px-4 py-2 font-black text-slate-600">關閉</button>
+        </div>
+
+        <form onSubmit={submit} className="grid gap-4 md:grid-cols-2">
+          <Field label="活動名稱">
+            <input className={inputClass()} value={editForm.activityName} onChange={e => setEditForm({ ...editForm, activityName: e.target.value })} />
+          </Field>
+          <Field label="活動編號">
+            <input className={inputClass()} value={editForm.activityCode} onChange={e => setEditForm({ ...editForm, activityCode: e.target.value })} />
+          </Field>
+          <Field label="開始日期">
+            <input type="date" className={inputClass()} value={editForm.startDate} onChange={e => setEditForm({ ...editForm, startDate: e.target.value })} />
+          </Field>
+          <Field label="結束日期">
+            <input type="date" className={inputClass()} value={editForm.endDate} onChange={e => setEditForm({ ...editForm, endDate: e.target.value })} />
+          </Field>
+          <Field label="預算金額">
+            <input type="number" min="0" step="0.01" className={inputClass()} value={editForm.budget} onChange={e => setEditForm({ ...editForm, budget: e.target.value })} />
+          </Field>
+          <Field label="活動類別">
+            <select className={inputClass()} value={editForm.category} onChange={e => setEditForm({ ...editForm, category: e.target.value })}>
+              {settings.activityCategories.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </Field>
+          <Field label="活動負責人">
+            <input className={inputClass()} value={editForm.personInCharge} onChange={e => setEditForm({ ...editForm, personInCharge: e.target.value })} />
+          </Field>
+          <Field label="有否申請預支">
+            <select className={inputClass()} value={editForm.advanceApplied} onChange={e => setEditForm({ ...editForm, advanceApplied: e.target.value })}>
+              <option>有</option>
+              <option>沒有</option>
+            </select>
+          </Field>
+
+          <div className="flex flex-col gap-2 md:col-span-2 md:flex-row">
+            <button className="btn-primary flex-1"><Save size={16} /> 儲存更改</button>
+            <button type="button" onClick={onClose} className="btn-muted flex-1">取消</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 function ManagePage({ activities, settings, setSettings, setActiveId, exportExcel, exportPDF, requirePassword, setActivities, flash }) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('全部')
+  const [editingActivity, setEditingActivity] = useState(null)
 
   const filtered = useMemo(() => {
     let list = activities.filter(a => {
@@ -565,8 +655,23 @@ function ManagePage({ activities, settings, setSettings, setActiveId, exportExce
     })
   }
 
+  function saveActivityEdit(updatedActivity) {
+    setActivities(prev => prev.map(a => a.id === updatedActivity.id ? updatedActivity : a))
+    setEditingActivity(null)
+    flash('活動內容已更新')
+  }
+
   return (
     <div className="space-y-5">
+      {editingActivity && (
+        <EditActivityModal
+          activity={editingActivity}
+          settings={settings}
+          activities={activities}
+          onClose={() => setEditingActivity(null)}
+          onSave={saveActivityEdit}
+        />
+      )}
       <HeaderBlock title="活動管理" subtitle="查看、排序、搜尋及匯出活動支出紀錄。" />
       {!settings.passwordHash && (
         <div className="flex items-start gap-3 rounded-3xl border border-amber-200 bg-amber-50 p-4 text-amber-800 shadow-sm">
@@ -625,6 +730,7 @@ function ManagePage({ activities, settings, setSettings, setActiveId, exportExce
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <button onClick={() => setActiveId(activity.id)} className="btn-primary"><Eye size={16} /> 查看</button>
+                <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEditingActivity(activity) }} className="btn-muted"><Pencil size={16} /> 更改活動內容</button>
                 <button onClick={() => exportExcel(activity)} className="btn-muted"><Download size={16} /> Excel</button>
                 <button onClick={() => exportPDF(activity)} className="btn-muted"><FileText size={16} /> PDF</button>
                 <button title={!settings.passwordHash ? '首次使用需設置密碼才能啟動刪除功能' : '刪除活動'} onClick={(e) => { e.preventDefault(); e.stopPropagation(); deleteActivity(activity.id) }} className="btn-danger"><Trash2 size={16} /> 刪除</button>
