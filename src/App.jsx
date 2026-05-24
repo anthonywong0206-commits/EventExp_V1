@@ -84,6 +84,53 @@ function downloadText(filename, text, type = 'application/json') {
   URL.revokeObjectURL(url)
 }
 
+function safeFileName(text) {
+  return String(text || 'receipt')
+    .trim()
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\s+/g, '_') || 'receipt'
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
+function downloadDataUrl(filename, dataUrl) {
+  const a = document.createElement('a')
+  a.href = dataUrl
+  a.download = filename
+  a.click()
+}
+
+function openPdfPreview(dataUrl) {
+  const win = window.open()
+  if (!win) {
+    alert('瀏覽器阻擋了預覽視窗，請允許彈出視窗後再試。')
+    return
+  }
+  win.document.write(`
+    <!doctype html>
+    <html>
+      <head>
+        <title>PDF 預覽</title>
+        <style>
+          html, body { margin: 0; height: 100%; background: #0f172a; }
+          iframe { width: 100%; height: 100%; border: 0; background: white; }
+        </style>
+      </head>
+      <body>
+        <iframe src="${dataUrl}"></iframe>
+      </body>
+    </html>
+  `)
+  win.document.close()
+}
+
 function parseQuotedLine(line) {
   const matches = line.match(/"[^"]*"|\S+/g) || []
   return matches.map(item => item.replace(/^"|"$/g, '').trim())
@@ -114,6 +161,8 @@ function parseExpenseLine(line) {
       description,
       amount,
       payer,
+      pdfData: '',
+      pdfFileName: '',
       createdAt: new Date().toISOString()
     }
   }
@@ -259,7 +308,8 @@ function App() {
       類別: x.category,
       支出描述: x.description,
       金額: Number(x.amount || 0),
-      支付者: x.payer
+      支付者: x.payer,
+      PDF文件: x.pdfData ? `${x.receiptNo}.pdf` : '未上傳'
     }))
     const wb = XLSX.utils.book_new()
     const ws1 = XLSX.utils.aoa_to_sheet(summary)
@@ -299,9 +349,9 @@ function App() {
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 8,
       theme: 'striped',
-      head: [['Receipt No.', 'Date', 'Category', 'Description', 'Amount', 'Payer']],
+      head: [['Receipt No.', 'Date', 'Category', 'Description', 'Amount', 'Payer', 'PDF']],
       body: (activity.expenses || []).map(x => [
-        x.receiptNo, x.date, x.category, x.description, currency(x.amount), x.payer
+        x.receiptNo, x.date, x.category, x.description, currency(x.amount), x.payer, x.pdfData ? `${x.receiptNo}.pdf` : 'Not uploaded'
       ]),
       styles: { font: 'helvetica', fontSize: 8 },
       headStyles: { fillColor: [15, 23, 42] }
@@ -674,6 +724,46 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
     flash('支出已更新')
   }
 
+  async function uploadReceiptPdf(expenseId, file) {
+    if (!file) return
+    if (file.type !== 'application/pdf') {
+      flash('請上傳 PDF 檔案')
+      return
+    }
+    const dataUrl = await fileToDataUrl(file)
+    updateActivity({
+      ...activity,
+      expenses: activity.expenses.map(x => {
+        if (x.id !== expenseId) return x
+        const generatedName = `${safeFileName(x.receiptNo)}.pdf`
+        return {
+          ...x,
+          pdfData: dataUrl,
+          pdfFileName: generatedName,
+          pdfOriginalName: file.name,
+          pdfUploadedAt: new Date().toISOString()
+        }
+      })
+    })
+    flash('PDF 已上傳，請按 PDF 欄目檢視或下載')
+  }
+
+  function previewReceiptPdf(expense) {
+    if (!expense.pdfData) {
+      flash('此收據尚未上傳 PDF')
+      return
+    }
+    openPdfPreview(expense.pdfData)
+  }
+
+  function downloadReceiptPdf(expense) {
+    if (!expense.pdfData) {
+      flash('此收據尚未上傳 PDF')
+      return
+    }
+    downloadDataUrl(`${safeFileName(expense.receiptNo)}.pdf`, expense.pdfData)
+  }
+
   return (
     <div className="space-y-5">
       <button onClick={() => setActiveId(null)} className="inline-flex items-center gap-2 rounded-2xl bg-white px-4 py-3 font-bold text-slate-600 shadow-soft"><ArrowLeft size={18} /> 返回活動列表</button>
@@ -731,7 +821,10 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
 
       <section className="rounded-[2rem] bg-white p-5 shadow-soft">
         <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <h3 className="flex items-center gap-2 text-xl font-black"><BarChart3 className="text-blue-600" /> 支出紀錄</h3>
+          <div>
+            <h3 className="flex items-center gap-2 text-xl font-black"><BarChart3 className="text-blue-600" /> 支出紀錄</h3>
+            <p className="mt-1 text-sm text-slate-500">可於每筆支出的 PDF 欄上傳收據 PDF；上傳後可預覽及下載，檔名會根據收據編號產生。</p>
+          </div>
           <div className="flex flex-col gap-2 md:flex-row">
             <input className={inputClass()} placeholder="搜尋收據、描述、支付者" value={expenseQuery} onChange={e => setExpenseQuery(e.target.value)} />
             <select className={inputClass()} value={catFilter} onChange={e => setCatFilter(e.target.value)}><option>全部</option>{settings.expenseCategories.map(c => <option key={c}>{c}</option>)}</select>
@@ -746,7 +839,7 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
 
         <div className="table-wrap">
           <table className="w-full min-w-[880px] text-left text-sm">
-            <thead><tr className="border-b bg-slate-50">{['收據編號','日期','類別','支出描述','金額','支付者','操作'].map(h => <th className="p-3" key={h}>{h}</th>)}</tr></thead>
+            <thead><tr className="border-b bg-slate-50">{['收據編號','日期','類別','支出描述','金額','支付者','PDF','操作'].map(h => <th className="p-3" key={h}>{h}</th>)}</tr></thead>
             <tbody>
               {filteredExpenses.map(x => (
                 <tr key={x.id} className="border-b align-top">
@@ -758,6 +851,7 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
                       <td className="p-2"><input className={inputClass()} value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} /></td>
                       <td className="p-2"><input type="number" className={inputClass()} value={draft.amount} onChange={e => setDraft({ ...draft, amount: e.target.value })} /></td>
                       <td className="p-2"><input className={inputClass()} value={draft.payer} onChange={e => setDraft({ ...draft, payer: e.target.value })} /></td>
+                      <td className="p-2 text-sm text-slate-500">PDF 可在完成編輯後上傳或檢視</td>
                       <td className="p-2"><button onClick={saveEdit} className="btn-primary"><Save size={16}/>儲存</button></td>
                     </>
                   ) : (
@@ -768,6 +862,28 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
                       <td className="p-3">{x.description}</td>
                       <td className="p-3 font-bold">{currency(x.amount)}</td>
                       <td className="p-3">{x.payer}</td>
+                      <td className="p-3">
+                        <div className="flex flex-wrap gap-2">
+                          <label className="btn-muted cursor-pointer">
+                            <Upload size={16} /> 上傳
+                            <input
+                              type="file"
+                              accept="application/pdf"
+                              className="hidden"
+                              onChange={(e) => uploadReceiptPdf(x.id, e.target.files?.[0])}
+                            />
+                          </label>
+                          {x.pdfData ? (
+                            <>
+                              <button onClick={() => previewReceiptPdf(x)} className="btn-primary"><Eye size={16} /> PDF</button>
+                              <button onClick={() => downloadReceiptPdf(x)} className="btn-muted"><Download size={16} /> 下載</button>
+                            </>
+                          ) : (
+                            <span className="rounded-2xl bg-slate-100 px-3 py-2 text-xs font-bold text-slate-500">未上傳</span>
+                          )}
+                        </div>
+                        {x.pdfData && <p className="mt-2 text-xs text-slate-500">檔名：{safeFileName(x.receiptNo)}.pdf</p>}
+                      </td>
                       <td className="p-3">
                         <div className="flex gap-2">
                           <button onClick={() => startEdit(x)} className="btn-muted"><Pencil size={16} /> 編輯</button>
