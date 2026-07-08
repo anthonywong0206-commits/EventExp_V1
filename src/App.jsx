@@ -1,5 +1,5 @@
 
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Home,
   FolderKanban,
@@ -23,9 +23,11 @@ import {
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
+import { isSupabaseConfigured, supabase } from './supabaseClient'
 
 const STORAGE_KEY = 'eventExpenseTracker.activities.v1'
 const SETTINGS_KEY = 'eventExpenseTracker.settings.v1'
+const CLOUD_TABLE = 'user_app_data'
 
 const defaultSettings = {
   systemName: '活動支出追蹤系統',
@@ -212,6 +214,11 @@ function App() {
   const [activeId, setActiveId] = useState(null)
   const [toast, setToast] = useState('')
   const [form, setForm] = useState(emptyActivity)
+  const [session, setSession] = useState(null)
+  const [authLoading, setAuthLoading] = useState(isSupabaseConfigured)
+  const [cloudReady, setCloudReady] = useState(false)
+  const [cloudStatus, setCloudStatus] = useState(isSupabaseConfigured ? '尚未登入雲端同步' : '未設定 Supabase')
+  const applyingRemoteRef = useRef(false)
 
   useEffect(() => {
     try {
@@ -226,12 +233,140 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!supabase) return
+
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session)
+      setAuthLoading(false)
+    })
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession)
+      setCloudReady(false)
+      setCloudStatus(nextSession ? '正在同步雲端資料...' : '尚未登入雲端同步')
+    })
+
+    return () => listener.subscription.unsubscribe()
+  }, [])
+
+  useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(activities))
   }, [activities])
 
   useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
   }, [settings])
+
+  useEffect(() => {
+    if (!supabase || !session?.user) return
+
+    let active = true
+    const userId = session.user.id
+
+    async function loadCloudSnapshot() {
+      setCloudStatus('正在讀取雲端資料...')
+      const localActivities = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
+      const localSettings = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null')
+
+      const { data, error } = await supabase
+        .from(CLOUD_TABLE)
+        .select('activities, settings, updated_at')
+        .eq('user_id', userId)
+        .maybeSingle()
+
+      if (!active) return
+
+      if (error) {
+        console.error(error)
+        setCloudStatus('雲端同步讀取失敗，暫用本機資料')
+        return
+      }
+
+      if (!data) {
+        const snapshot = {
+          user_id: userId,
+          activities: Array.isArray(localActivities) ? localActivities : [],
+          settings: { ...defaultSettings, ...(localSettings || {}) },
+          updated_at: new Date().toISOString()
+        }
+
+        const { error: upsertError } = await supabase
+          .from(CLOUD_TABLE)
+          .upsert(snapshot, { onConflict: 'user_id' })
+
+        if (upsertError) {
+          console.error(upsertError)
+          setCloudStatus('雲端同步建立失敗，暫用本機資料')
+          return
+        }
+
+        if (!active) return
+        setCloudReady(true)
+        setCloudStatus('雲端同步已啟用')
+        return
+      }
+
+      applyingRemoteRef.current = true
+      setActivities(Array.isArray(data.activities) ? data.activities : [])
+      setSettings({ ...defaultSettings, ...(data.settings || {}) })
+      window.setTimeout(() => {
+        applyingRemoteRef.current = false
+      }, 0)
+      setCloudReady(true)
+      setCloudStatus('雲端同步已啟用')
+    }
+
+    loadCloudSnapshot()
+
+    const channel = supabase
+      .channel(`user-app-data-${userId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: CLOUD_TABLE, filter: `user_id=eq.${userId}` },
+        (payload) => {
+          if (!payload.new) return
+          applyingRemoteRef.current = true
+          setActivities(Array.isArray(payload.new.activities) ? payload.new.activities : [])
+          setSettings({ ...defaultSettings, ...(payload.new.settings || {}) })
+          window.setTimeout(() => {
+            applyingRemoteRef.current = false
+          }, 0)
+          setCloudStatus('已收到其他裝置更新')
+        }
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') setCloudStatus('雲端同步已啟用')
+      })
+
+    return () => {
+      active = false
+      supabase.removeChannel(channel)
+    }
+  }, [session])
+
+  useEffect(() => {
+    if (!supabase || !session?.user || !cloudReady || applyingRemoteRef.current) return
+
+    const timer = window.setTimeout(async () => {
+      const { error } = await supabase
+        .from(CLOUD_TABLE)
+        .upsert({
+          user_id: session.user.id,
+          activities,
+          settings,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'user_id' })
+
+      if (error) {
+        console.error(error)
+        setCloudStatus('雲端同步儲存失敗，已保留本機快取')
+      } else {
+        setCloudStatus('雲端同步已更新')
+      }
+    }, 500)
+
+    return () => window.clearTimeout(timer)
+  }, [activities, settings, session, cloudReady])
 
   function flash(message) {
     setToast(message)
@@ -373,6 +508,12 @@ function App() {
         <main className="safe-bottom w-full px-4 py-5 md:px-8 md:py-8">
           <MobileHeader systemName={settings.systemName} />
           {toast && <div className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white shadow-soft">{toast}</div>}
+          <CloudSyncBar
+            session={session}
+            authLoading={authLoading}
+            cloudStatus={cloudStatus}
+            flash={flash}
+          />
 
           {page === 'home' && (
             <HomePage
@@ -426,6 +567,74 @@ function App() {
 
       <BottomNav page={page} setPage={(p) => { setActiveId(null); setPage(p) }} />
     </div>
+  )
+}
+
+function CloudSyncBar({ session, authLoading, cloudStatus, flash }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function signIn(e) {
+    e.preventDefault()
+    if (!supabase || !email || !password) return
+    setBusy(true)
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) flash(error.message)
+    else {
+      setEmail('')
+      setPassword('')
+      flash('已登入雲端同步')
+    }
+    setBusy(false)
+  }
+
+  async function signUp() {
+    if (!supabase || !email || !password) return
+    setBusy(true)
+    const { error } = await supabase.auth.signUp({ email, password })
+    if (error) flash(error.message)
+    else flash('帳號已建立，請按 Supabase Auth 設定完成確認')
+    setBusy(false)
+  }
+
+  async function signOut() {
+    if (!supabase) return
+    await supabase.auth.signOut()
+    flash('已登出雲端同步')
+  }
+
+  if (!isSupabaseConfigured) {
+    return (
+      <div className="mb-5 rounded-3xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-800 shadow-soft">
+        Supabase 尚未設定，請加入 VITE_SUPABASE_URL 與 VITE_SUPABASE_ANON_KEY。
+      </div>
+    )
+  }
+
+  if (authLoading) {
+    return <div className="mb-5 rounded-3xl bg-white p-4 text-sm font-semibold text-slate-600 shadow-soft">正在檢查雲端登入...</div>
+  }
+
+  if (session?.user) {
+    return (
+      <div className="mb-5 flex flex-col gap-3 rounded-3xl bg-white p-4 shadow-soft md:flex-row md:items-center md:justify-between">
+        <div>
+          <p className="text-sm font-black text-slate-800">{session.user.email}</p>
+          <p className="text-xs font-semibold text-slate-500">{cloudStatus}</p>
+        </div>
+        <button onClick={signOut} className="btn-muted">登出</button>
+      </div>
+    )
+  }
+
+  return (
+    <form onSubmit={signIn} className="mb-5 grid gap-2 rounded-3xl bg-white p-4 shadow-soft md:grid-cols-[1fr_1fr_auto_auto]">
+      <input type="email" className={inputClass()} placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} />
+      <input type="password" className={inputClass()} placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} />
+      <button disabled={busy} className="btn-primary">登入同步</button>
+      <button type="button" disabled={busy} onClick={signUp} className="btn-muted">建立帳號</button>
+    </form>
   )
 }
 
