@@ -95,6 +95,10 @@ function safeFileName(text) {
     .replace(/\s+/g, '_') || 'receipt'
 }
 
+function receiptLabel(expense) {
+  return expense.receiptNo || '待輸入'
+}
+
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -197,15 +201,14 @@ function normalizeExpenseDate(input) {
 
 function parseExpenseLine(line, defaultCategory = '未分類') {
   const parts = parseQuotedLine(line)
-  if (parts.length < 5) return { error: '資料不足，請使用：收據編號 日期 支出描述 金額 支付者' }
+  if (parts.length < 4) return { error: '資料不足，請使用：日期 支出描述 金額 支付者' }
 
-  const receiptNo = parts[0]
-  const date = normalizeExpenseDate(parts[1])
-  const amountIndex = parts.findIndex((p, i) => i >= 2 && /^-?\d+(\.\d+)?$/.test(p))
+  const date = normalizeExpenseDate(parts[0])
+  const amountIndex = parts.findIndex((p, i) => i >= 1 && /^-?\d+(\.\d+)?$/.test(p))
   if (amountIndex === -1) return { error: '找不到有效金額' }
   if (!date) return { error: '日期格式必須為 DD/MM/YYYY、DD-MM-YYYY 或 YYYY-MM-DD' }
 
-  const description = parts.slice(2, amountIndex).join(' ')
+  const description = parts.slice(1, amountIndex).join(' ')
   const amount = Number(parts[amountIndex])
   const payer = parts.slice(amountIndex + 1).join(' ')
   if (!description || !payer) return { error: '支出描述或支付者不可留空' }
@@ -213,7 +216,7 @@ function parseExpenseLine(line, defaultCategory = '未分類') {
   return {
     expense: {
       id: uid(),
-      receiptNo,
+      receiptNo: '',
       date,
       category: defaultCategory,
       description,
@@ -533,13 +536,13 @@ function App() {
       更新時間: x.updatedAt || ''
     }))
     const expenses = (activity.expenses || []).map(x => ({
-      收據編號: x.receiptNo,
+      收據編號: receiptLabel(x),
       日期: x.date,
       類別: x.category,
       支出描述: x.description,
       金額: Number(x.amount || 0),
       支付者: x.payer,
-      PDF文件: x.pdfData ? `${x.receiptNo}.pdf` : '未上傳'
+      PDF文件: x.pdfData ? `${safeFileName(receiptLabel(x))}.pdf` : '未上傳'
     }))
     const wb = XLSX.utils.book_new()
     const ws1 = XLSX.utils.aoa_to_sheet(summary)
@@ -599,7 +602,7 @@ function App() {
       theme: 'striped',
       head: [['Receipt No.', 'Date', 'Category', 'Description', 'Amount', 'Payer', 'PDF']],
       body: (activity.expenses || []).map(x => [
-        x.receiptNo, x.date, x.category, x.description, currency(x.amount), x.payer, x.pdfData ? `${x.receiptNo}.pdf` : 'Not uploaded'
+        receiptLabel(x), x.date, x.category, x.description, currency(x.amount), x.payer, x.pdfData ? `${safeFileName(receiptLabel(x))}.pdf` : 'Not uploaded'
       ]),
       styles: { font: 'helvetica', fontSize: 8 },
       headStyles: { fillColor: [15, 23, 42] }
@@ -1148,7 +1151,7 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
 
   function addSingle(e) {
     e.preventDefault()
-    if (!single.receiptNo || !single.date || !single.description || !single.amount || !single.payer) {
+    if (!single.date || !single.description || !single.amount || !single.payer) {
       flash('請填妥單筆支出資料')
       return
     }
@@ -1159,6 +1162,7 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
         {
           ...single,
           id: uid(),
+          receiptNo: '',
           category: activity.expenseCategory || settings.expenseCategories[0] || '未分類',
           amount: Number(single.amount),
           createdAt: new Date().toISOString()
@@ -1201,7 +1205,7 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
       ...activity,
       expenses: activity.expenses.map(x => {
         if (x.id !== expenseId) return x
-        const generatedName = `${safeFileName(x.receiptNo)}.pdf`
+        const generatedName = `${safeFileName(receiptLabel(x))}.pdf`
         return {
           ...x,
           pdfData: dataUrl,
@@ -1227,7 +1231,7 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
       flash('此收據尚未上傳 PDF')
       return
     }
-    downloadDataUrl(`${safeFileName(expense.receiptNo)}.pdf`, expense.pdfData)
+    downloadDataUrl(`${safeFileName(receiptLabel(expense))}.pdf`, expense.pdfData)
   }
 
   function syncAdvanceReceipts(nextReceipts) {
@@ -1389,21 +1393,20 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
 
       <section className="rounded-[2rem] bg-white p-5 shadow-soft">
         <h3 className="mb-4 flex items-center gap-2 text-xl font-black"><PlusCircle className="text-blue-600" /> 新增單筆支出</h3>
-        <form onSubmit={addSingle} className="grid gap-3 md:grid-cols-5">
-          <input className={inputClass()} placeholder="收據編號" value={single.receiptNo} onChange={e => setSingle({ ...single, receiptNo: e.target.value })} />
+        <form onSubmit={addSingle} className="grid gap-3 md:grid-cols-4">
           <input type="date" className={inputClass()} value={single.date} onChange={e => setSingle({ ...single, date: e.target.value })} />
           <input className={inputClass()} placeholder="支出描述" value={single.description} onChange={e => setSingle({ ...single, description: e.target.value })} />
           <input type="number" step="0.01" className={inputClass()} placeholder="金額" value={single.amount} onChange={e => setSingle({ ...single, amount: e.target.value })} />
           <input className={inputClass()} placeholder="支付者" value={single.payer} onChange={e => setSingle({ ...single, payer: e.target.value })} />
-          <button className="rounded-2xl bg-blue-600 px-4 py-3 font-black text-white md:col-span-5">新增支出</button>
+          <button className="rounded-2xl bg-blue-600 px-4 py-3 font-black text-white md:col-span-4">新增支出</button>
         </form>
-        <p className="mt-3 text-sm text-slate-500">支出類別會自動使用此活動的「{activity.expenseCategory || '未設定'}」。</p>
+        <p className="mt-3 text-sm text-slate-500">收據號碼會在支出紀錄建立後於第一欄自行補回；支出類別會自動使用此活動的「{activity.expenseCategory || '未設定'}」。</p>
       </section>
 
       <section className="rounded-[2rem] bg-white p-5 shadow-soft">
         <h3 className="mb-2 text-xl font-black">批量輸入支出紀錄</h3>
-        <p className="mb-3 text-sm text-slate-500">格式：收據編號 日期 支出描述 金額 支付者。日期可用 DD/MM/YYYY、DD-MM-YYYY 或 YYYY-MM-DD；支援雙引號，例如 "大型活動佈置材料"。</p>
-        <textarea className={`${inputClass()} min-h-40 font-mono text-sm`} value={bulk} onChange={e => setBulk(e.target.value)} placeholder={'R001 01/05/2026 文具及活動材料 238.5 陳大文\nR004 04/05/2026 "大型活動佈置材料" 1200 "陳大文"'} />
+        <p className="mb-3 text-sm text-slate-500">格式：日期 支出描述 金額 支付者。收據號碼會在支出紀錄建立後於第一欄自行補回；日期可用 DD/MM/YYYY、DD-MM-YYYY 或 YYYY-MM-DD。</p>
+        <textarea className={`${inputClass()} min-h-40 font-mono text-sm`} value={bulk} onChange={e => setBulk(e.target.value)} placeholder={'01/05/2026 文具及活動材料 238.5 陳大文\n04/05/2026 "大型活動佈置材料" 1200 "陳大文"'} />
         <div className="mt-3 flex flex-wrap gap-2">
           <button onClick={buildPreview} className="btn-primary">產生預覽</button>
           <button onClick={confirmBulk} className="btn-muted">確認儲存</button>
@@ -1412,8 +1415,8 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
         {!!preview.length && (
           <div className="table-wrap mt-4">
             <table className="w-full min-w-[720px] text-left text-sm">
-              <thead><tr className="border-b bg-slate-50">{['收據編號','日期','支出描述','金額','支付者','類別'].map(h => <th className="p-3" key={h}>{h}</th>)}</tr></thead>
-              <tbody>{preview.map(x => <tr className="border-b" key={x.id}><td className="p-3">{x.receiptNo}</td><td className="p-3">{x.date}</td><td className="p-3">{x.description}</td><td className="p-3">{currency(x.amount)}</td><td className="p-3">{x.payer}</td><td className="p-3">{x.category}</td></tr>)}</tbody>
+              <thead><tr className="border-b bg-slate-50">{['日期','支出描述','金額','支付者','類別'].map(h => <th className="p-3" key={h}>{h}</th>)}</tr></thead>
+              <tbody>{preview.map(x => <tr className="border-b" key={x.id}><td className="p-3">{x.date}</td><td className="p-3">{x.description}</td><td className="p-3">{currency(x.amount)}</td><td className="p-3">{x.payer}</td><td className="p-3">{x.category}</td></tr>)}</tbody>
             </table>
           </div>
         )}
@@ -1456,7 +1459,7 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
                     </>
                   ) : (
                     <>
-                      <td className="p-3 font-bold">{x.receiptNo}</td>
+                      <td className="p-3 font-bold">{receiptLabel(x)}</td>
                       <td className="p-3">{x.date}</td>
                       <td className="p-3">{x.category}</td>
                       <td className="p-3">{x.description}</td>
@@ -1482,7 +1485,7 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
                             <span className="rounded-2xl bg-slate-100 px-3 py-2 text-xs font-bold text-slate-500">未上傳</span>
                           )}
                         </div>
-                        {x.pdfData && <p className="mt-2 text-xs text-slate-500">檔名：{safeFileName(x.receiptNo)}.pdf</p>}
+                        {x.pdfData && <p className="mt-2 text-xs text-slate-500">檔名：{safeFileName(receiptLabel(x))}.pdf</p>}
                       </td>
                       <td className="p-3">
                         <div className="flex gap-2">
