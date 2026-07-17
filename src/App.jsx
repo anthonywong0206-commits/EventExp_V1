@@ -48,13 +48,7 @@ const emptyActivity = {
   expenseCategory: '物資',
   personInCharge: '',
   advanceApplied: '沒有',
-  advanceReceipt: {
-    expectedDate: '',
-    amount: '',
-    imageData: '',
-    imageName: '',
-    imageUploadedAt: ''
-  }
+  advanceReceipts: []
 }
 
 const emptyExpense = {
@@ -209,6 +203,27 @@ function getUsed(activity) {
 
 function getRemaining(activity) {
   return Number(activity.budget || 0) - getUsed(activity)
+}
+
+function hasAdvanceReceiptData(record) {
+  return !!(record?.expectedDate || record?.amount || record?.imageData)
+}
+
+function getAdvanceReceipts(activity) {
+  if (Array.isArray(activity.advanceReceipts)) {
+    return activity.advanceReceipts.map((item, index) => ({
+      id: item.id || `${activity.id || 'activity'}-advance-${index}`,
+      ...item
+    }))
+  }
+  if (hasAdvanceReceiptData(activity.advanceReceipt)) {
+    return [{ id: `${activity.id || 'activity'}-advance-legacy`, ...activity.advanceReceipt }]
+  }
+  return []
+}
+
+function getAdvanceTotal(activity) {
+  return getAdvanceReceipts(activity).reduce((sum, item) => sum + Number(item.amount || 0), 0)
 }
 
 function StatCard({ label, value, tone = 'blue', sub }) {
@@ -421,13 +436,7 @@ function App() {
       id: uid(),
       ...form,
       budget: Number(form.budget),
-      advanceReceipt: {
-        expectedDate: '',
-        amount: '',
-        imageData: '',
-        imageName: '',
-        imageUploadedAt: ''
-      },
+      advanceReceipts: [],
       expenses: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -469,6 +478,7 @@ function App() {
   function exportExcel(activity) {
     const used = getUsed(activity)
     const remaining = getRemaining(activity)
+    const advanceReceipts = getAdvanceReceipts(activity)
     const summary = [
       ['活動名稱', activity.activityName],
       ['活動編號', activity.activityCode],
@@ -481,11 +491,18 @@ function App() {
       ['已使用金額', used],
       ['剩餘金額', remaining],
       ['預支狀態', activity.advanceApplied],
-      ['預支預計領取日期', activity.advanceReceipt?.expectedDate || ''],
-      ['預支領取金額', Number(activity.advanceReceipt?.amount || 0)],
-      ['預支領取圖片', activity.advanceReceipt?.imageData ? (activity.advanceReceipt.imageName || '已上傳') : '未上傳'],
+      ['預支紀錄數量', advanceReceipts.length],
+      ['預支領取總額', getAdvanceTotal(activity)],
       ['匯出日期', today()]
     ]
+    const advances = advanceReceipts.map((x, index) => ({
+      序號: index + 1,
+      預計領取日期: x.expectedDate || '',
+      金額: Number(x.amount || 0),
+      圖片: x.imageData ? (x.imageName || '已上傳') : '未上傳',
+      建立時間: x.createdAt || '',
+      更新時間: x.updatedAt || ''
+    }))
     const expenses = (activity.expenses || []).map(x => ({
       收據編號: x.receiptNo,
       日期: x.date,
@@ -498,8 +515,10 @@ function App() {
     const wb = XLSX.utils.book_new()
     const ws1 = XLSX.utils.aoa_to_sheet(summary)
     const ws2 = XLSX.utils.json_to_sheet(expenses)
+    const ws3 = XLSX.utils.json_to_sheet(advances)
     XLSX.utils.book_append_sheet(wb, ws1, '活動基本資料')
     XLSX.utils.book_append_sheet(wb, ws2, '支出紀錄')
+    XLSX.utils.book_append_sheet(wb, ws3, '預支紀錄')
     XLSX.writeFile(wb, `${activity.activityCode}_${activity.activityName}_支出紀錄.xlsx`)
   }
 
@@ -507,6 +526,7 @@ function App() {
     const doc = new jsPDF({ orientation: 'landscape' })
     const used = getUsed(activity)
     const remaining = getRemaining(activity)
+    const advanceReceipts = getAdvanceReceipts(activity)
 
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(18)
@@ -524,13 +544,26 @@ function App() {
         ['Accounting Code', activity.accountingCode || '', 'Expense Category', activity.expenseCategory || ''],
         ['Date', `${activity.startDate} to ${activity.endDate}`, 'Category', activity.category],
         ['Person In Charge', activity.personInCharge, 'Advance Applied', activity.advanceApplied],
-        ['Advance Date', activity.advanceReceipt?.expectedDate || '', 'Advance Amount', currency(activity.advanceReceipt?.amount || 0)],
+        ['Advance Records', String(advanceReceipts.length), 'Advance Total', currency(getAdvanceTotal(activity))],
         ['Budget', currency(activity.budget), 'Used', currency(used)],
         ['Remaining', currency(remaining), 'Status', remaining < 0 ? 'Over Budget' : 'Within Budget']
       ],
       styles: { font: 'helvetica', fontSize: 9 },
       headStyles: { fillColor: [37, 99, 235] }
     })
+
+    if (advanceReceipts.length) {
+      autoTable(doc, {
+        startY: doc.lastAutoTable.finalY + 8,
+        theme: 'striped',
+        head: [['No.', 'Expected Date', 'Amount', 'Image']],
+        body: advanceReceipts.map((x, index) => [
+          index + 1, x.expectedDate || '', currency(x.amount || 0), x.imageData ? (x.imageName || 'Uploaded') : 'Not uploaded'
+        ]),
+        styles: { font: 'helvetica', fontSize: 8 },
+        headStyles: { fillColor: [37, 99, 235] }
+      })
+    }
 
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 8,
@@ -983,7 +1016,8 @@ function ManagePage({ activities, settings, setSettings, setActiveId, exportExce
           const used = getUsed(activity)
           const remaining = getRemaining(activity)
           const percent = activity.budget > 0 ? Math.round((used / activity.budget) * 100) : 0
-          const advanceReceipt = activity.advanceReceipt || {}
+          const advanceReceipts = getAdvanceReceipts(activity)
+          const nextAdvance = [...advanceReceipts].filter(x => x.expectedDate).sort((a, b) => new Date(a.expectedDate) - new Date(b.expectedDate))[0]
           return (
             <article key={activity.id} className="rounded-[2rem] bg-white p-5 shadow-soft">
               <div className="flex items-start justify-between gap-3">
@@ -1007,8 +1041,8 @@ function ManagePage({ activities, settings, setSettings, setActiveId, exportExce
               <p className="mt-2 text-xs text-slate-500">預算使用率：{percent}% · 預支：{activity.advanceApplied}</p>
               <div className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">
                 <p className="font-black text-slate-800">預支領取</p>
-                <p className="mt-1">預計日期：{advanceReceipt.expectedDate || '未填寫'} · 金額：{advanceReceipt.amount ? currency(advanceReceipt.amount) : '未填寫'}</p>
-                <p className="mt-1 text-xs font-semibold text-slate-500">圖片：{advanceReceipt.imageData ? (advanceReceipt.imageName || '已上傳') : '未上傳'}</p>
+                <p className="mt-1">紀錄：{advanceReceipts.length} 筆 · 總額：{currency(getAdvanceTotal(activity))}</p>
+                <p className="mt-1 text-xs font-semibold text-slate-500">最近預計日期：{nextAdvance?.expectedDate || '未填寫'}</p>
               </div>
 
               <div className="mt-4 flex flex-wrap gap-2">
@@ -1041,13 +1075,7 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
   const used = getUsed(activity)
   const remaining = getRemaining(activity)
   const percent = activity.budget > 0 ? Math.round((used / activity.budget) * 100) : 0
-  const advanceReceipt = activity.advanceReceipt || {
-    expectedDate: '',
-    amount: '',
-    imageData: '',
-    imageName: '',
-    imageUploadedAt: ''
-  }
+  const advanceReceipts = getAdvanceReceipts(activity)
 
   const filteredExpenses = useMemo(() => {
     return [...(activity.expenses || [])]
@@ -1160,17 +1188,47 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
     downloadDataUrl(`${safeFileName(expense.receiptNo)}.pdf`, expense.pdfData)
   }
 
-  function updateAdvanceReceipt(patch) {
+  function syncAdvanceReceipts(nextReceipts) {
     updateActivity({
       ...activity,
-      advanceReceipt: {
-        ...advanceReceipt,
-        ...patch
-      }
+      advanceReceipts: nextReceipts
     })
   }
 
-  async function uploadAdvanceReceiptImage(file) {
+  function addAdvanceReceipt() {
+    syncAdvanceReceipts([
+      ...advanceReceipts,
+      {
+        id: uid(),
+        expectedDate: '',
+        amount: '',
+        imageData: '',
+        imageName: '',
+        imageUploadedAt: '',
+        createdAt: new Date().toISOString()
+      }
+    ])
+    flash('已新增一筆預支紀錄')
+  }
+
+  function updateAdvanceReceipt(receiptId, patch) {
+    syncAdvanceReceipts(advanceReceipts.map(item => (
+      item.id === receiptId
+        ? { ...item, ...patch, updatedAt: new Date().toISOString() }
+        : item
+    )))
+  }
+
+  async function deleteAdvanceReceipt(receiptId) {
+    await requirePassword(() => {
+      if (!window.confirm('確定刪除此預支紀錄？')) return false
+      syncAdvanceReceipts(advanceReceipts.filter(item => item.id !== receiptId))
+      flash('預支紀錄已刪除')
+      return true
+    })
+  }
+
+  async function uploadAdvanceReceiptImage(receiptId, file) {
     if (!file) return
     if (!file.type.startsWith('image/')) {
       flash('請上傳圖片檔案')
@@ -1181,7 +1239,7 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
       return
     }
     const dataUrl = await fileToDataUrl(file)
-    updateAdvanceReceipt({
+    updateAdvanceReceipt(receiptId, {
       imageData: dataUrl,
       imageName: file.name,
       imageUploadedAt: new Date().toISOString()
@@ -1189,20 +1247,20 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
     flash('預支領取圖片已上傳')
   }
 
-  function previewAdvanceReceiptImage() {
-    if (!advanceReceipt.imageData) {
+  function previewAdvanceReceiptImage(record) {
+    if (!record.imageData) {
       flash('尚未上傳預支領取圖片')
       return
     }
-    openImagePreview(advanceReceipt.imageData, '預支領取圖片')
+    openImagePreview(record.imageData, '預支領取圖片')
   }
 
-  function downloadAdvanceReceiptImage() {
-    if (!advanceReceipt.imageData) {
+  function downloadAdvanceReceiptImage(record) {
+    if (!record.imageData) {
       flash('尚未上傳預支領取圖片')
       return
     }
-    downloadDataUrl(advanceReceipt.imageName || `${safeFileName(activity.activityCode)}_advance.jpg`, advanceReceipt.imageData)
+    downloadDataUrl(record.imageName || `${safeFileName(activity.activityCode)}_advance.jpg`, record.imageData)
   }
 
   return (
@@ -1235,36 +1293,56 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
       </div>
 
       <section className="rounded-[2rem] bg-white p-5 shadow-soft">
-        <div className="mb-4">
-          <h3 className="text-xl font-black">預支領取</h3>
-          <p className="mt-1 text-sm text-slate-500">紀錄預計領取日期、金額及相關圖片；資料會跟隨活動同步到雲端。</p>
-        </div>
-        <div className="grid gap-3 md:grid-cols-3">
-          <Field label="預計領取日期">
-            <input type="date" className={inputClass()} value={advanceReceipt.expectedDate || ''} onChange={e => updateAdvanceReceipt({ expectedDate: e.target.value })} />
-          </Field>
-          <Field label="預支領取金額">
-            <input type="number" min="0" step="0.01" className={inputClass()} value={advanceReceipt.amount || ''} onChange={e => updateAdvanceReceipt({ amount: e.target.value })} />
-          </Field>
-          <Field label="圖片">
-            <label className="flex min-h-[50px] cursor-pointer items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3 font-black text-slate-600 hover:bg-slate-100">
-              <Upload size={16} /> 上傳圖片
-              <input type="file" accept="image/*" className="hidden" onChange={e => uploadAdvanceReceiptImage(e.target.files?.[0])} />
-            </label>
-          </Field>
-        </div>
-        {advanceReceipt.imageData && (
-          <div className="mt-4 flex flex-col gap-3 rounded-2xl bg-slate-50 p-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p className="font-bold text-slate-800">{advanceReceipt.imageName || '已上傳圖片'}</p>
-              <p className="text-xs text-slate-500">{advanceReceipt.imageUploadedAt ? `上傳時間：${new Date(advanceReceipt.imageUploadedAt).toLocaleString('zh-HK')}` : '已儲存圖片'}</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button onClick={previewAdvanceReceiptImage} className="btn-primary"><Eye size={16} /> 預覽</button>
-              <button onClick={downloadAdvanceReceiptImage} className="btn-muted"><Download size={16} /> 下載</button>
-            </div>
+        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h3 className="text-xl font-black">預支領取</h3>
+            <p className="mt-1 text-sm text-slate-500">可新增多筆預支紀錄；每筆紀錄都可保存預計領取日期、金額及圖片。</p>
           </div>
-        )}
+          <button onClick={addAdvanceReceipt} className="btn-primary"><PlusCircle size={16} /> 新增預支</button>
+        </div>
+        <div className="mb-4 grid gap-2 md:grid-cols-3">
+          <MiniMoney label="預支紀錄" value={`${advanceReceipts.length} 筆`} />
+          <MiniMoney label="預支總額" value={currency(getAdvanceTotal(activity))} />
+          <MiniMoney label="已上傳圖片" value={`${advanceReceipts.filter(x => x.imageData).length} 張`} />
+        </div>
+
+        <div className="space-y-3">
+          {advanceReceipts.map((record, index) => (
+            <div key={record.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <p className="font-black text-slate-800">預支紀錄 {index + 1}</p>
+                <button onClick={() => deleteAdvanceReceipt(record.id)} className="btn-danger"><Trash2 size={16} /> 刪除</button>
+              </div>
+              <div className="grid gap-3 md:grid-cols-3">
+                <Field label="預計領取日期">
+                  <input type="date" className={inputClass()} value={record.expectedDate || ''} onChange={e => updateAdvanceReceipt(record.id, { expectedDate: e.target.value })} />
+                </Field>
+                <Field label="預支領取金額">
+                  <input type="number" min="0" step="0.01" className={inputClass()} value={record.amount || ''} onChange={e => updateAdvanceReceipt(record.id, { amount: e.target.value })} />
+                </Field>
+                <Field label="圖片">
+                  <label className="flex min-h-[50px] cursor-pointer items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-3 font-black text-slate-600 hover:bg-slate-100">
+                    <Upload size={16} /> 上傳圖片
+                    <input type="file" accept="image/*" className="hidden" onChange={e => uploadAdvanceReceiptImage(record.id, e.target.files?.[0])} />
+                  </label>
+                </Field>
+              </div>
+              {record.imageData && (
+                <div className="mt-3 flex flex-col gap-3 rounded-2xl bg-white p-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="font-bold text-slate-800">{record.imageName || '已上傳圖片'}</p>
+                    <p className="text-xs text-slate-500">{record.imageUploadedAt ? `上傳時間：${new Date(record.imageUploadedAt).toLocaleString('zh-HK')}` : '已儲存圖片'}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => previewAdvanceReceiptImage(record)} className="btn-primary"><Eye size={16} /> 預覽</button>
+                    <button onClick={() => downloadAdvanceReceiptImage(record)} className="btn-muted"><Download size={16} /> 下載</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+          {!advanceReceipts.length && <Empty text="未有預支紀錄。按「新增預支」建立第一筆紀錄。" />}
+        </div>
       </section>
 
       <section className="rounded-[2rem] bg-white p-5 shadow-soft">
@@ -1451,13 +1529,26 @@ function SettingsPage({ settings, setSettings, activities, setActivities, requir
         expenseCategory: '物資',
         personInCharge: '陳大文',
         advanceApplied: '有',
-        advanceReceipt: {
-          expectedDate: '2026-05-25',
-          amount: 2000,
-          imageData: '',
-          imageName: '',
-          imageUploadedAt: ''
-        },
+        advanceReceipts: [
+          {
+            id: uid(),
+            expectedDate: '2026-05-25',
+            amount: 2000,
+            imageData: '',
+            imageName: '',
+            imageUploadedAt: '',
+            createdAt: new Date().toISOString()
+          },
+          {
+            id: uid(),
+            expectedDate: '2026-06-10',
+            amount: 1500,
+            imageData: '',
+            imageName: '',
+            imageUploadedAt: '',
+            createdAt: new Date().toISOString()
+          }
+        ],
         expenses: [
           { id: uid(), receiptNo: 'R001', date: '2026-06-01', category: '物資', description: '文具及活動材料', amount: 238.5, payer: '陳大文' },
           { id: uid(), receiptNo: 'R002', date: '2026-06-03', category: '膳食', description: '參加者茶點', amount: 520, payer: '李小明' }
