@@ -44,8 +44,17 @@ const emptyActivity = {
   endDate: '',
   budget: '',
   category: '社區活動',
+  accountingCode: '',
+  expenseCategory: '物資',
   personInCharge: '',
-  advanceApplied: '沒有'
+  advanceApplied: '沒有',
+  advanceReceipt: {
+    expectedDate: '',
+    amount: '',
+    imageData: '',
+    imageName: '',
+    imageUploadedAt: ''
+  }
 }
 
 const emptyExpense = {
@@ -127,6 +136,30 @@ function openPdfPreview(dataUrl) {
       </head>
       <body>
         <iframe src="${dataUrl}"></iframe>
+      </body>
+    </html>
+  `)
+  win.document.close()
+}
+
+function openImagePreview(dataUrl, title = '圖片預覽') {
+  const win = window.open()
+  if (!win) {
+    alert('瀏覽器阻擋了預覽視窗，請允許彈出視窗後再試。')
+    return
+  }
+  win.document.write(`
+    <!doctype html>
+    <html>
+      <head>
+        <title>${title}</title>
+        <style>
+          html, body { margin: 0; min-height: 100%; background: #0f172a; display: grid; place-items: center; }
+          img { max-width: 100%; max-height: 100vh; object-fit: contain; background: white; }
+        </style>
+      </head>
+      <body>
+        <img src="${dataUrl}" alt="${title}" />
       </body>
     </html>
   `)
@@ -375,7 +408,7 @@ function App() {
 
   function createActivity(e) {
     e.preventDefault()
-    const required = ['activityName', 'activityCode', 'startDate', 'endDate', 'budget', 'category', 'personInCharge']
+    const required = ['activityName', 'activityCode', 'startDate', 'endDate', 'budget', 'category', 'expenseCategory', 'personInCharge']
     if (required.some(k => !String(form[k]).trim())) {
       flash('請填妥所有必填欄位')
       return
@@ -388,12 +421,23 @@ function App() {
       id: uid(),
       ...form,
       budget: Number(form.budget),
+      advanceReceipt: {
+        expectedDate: '',
+        amount: '',
+        imageData: '',
+        imageName: '',
+        imageUploadedAt: ''
+      },
       expenses: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     }
     setActivities(prev => [item, ...prev])
-    setForm({ ...emptyActivity, category: settings.activityCategories[0] || '社區活動' })
+    setForm({
+      ...emptyActivity,
+      category: settings.activityCategories[0] || '社區活動',
+      expenseCategory: settings.expenseCategories[0] || '物資'
+    })
     setPage('manage')
     flash('活動已建立')
   }
@@ -428,13 +472,18 @@ function App() {
     const summary = [
       ['活動名稱', activity.activityName],
       ['活動編號', activity.activityCode],
+      ['會計編號', activity.accountingCode || ''],
       ['活動日期', `${activity.startDate} 至 ${activity.endDate}`],
       ['活動類別', activity.category],
+      ['支出類別', activity.expenseCategory || ''],
       ['活動負責人', activity.personInCharge],
       ['預算金額', activity.budget],
       ['已使用金額', used],
       ['剩餘金額', remaining],
       ['預支狀態', activity.advanceApplied],
+      ['預支預計領取日期', activity.advanceReceipt?.expectedDate || ''],
+      ['預支領取金額', Number(activity.advanceReceipt?.amount || 0)],
+      ['預支領取圖片', activity.advanceReceipt?.imageData ? (activity.advanceReceipt.imageName || '已上傳') : '未上傳'],
       ['匯出日期', today()]
     ]
     const expenses = (activity.expenses || []).map(x => ({
@@ -472,8 +521,10 @@ function App() {
       head: [['Item', 'Content', 'Item', 'Content']],
       body: [
         ['Activity Name', activity.activityName, 'Activity Code', activity.activityCode],
+        ['Accounting Code', activity.accountingCode || '', 'Expense Category', activity.expenseCategory || ''],
         ['Date', `${activity.startDate} to ${activity.endDate}`, 'Category', activity.category],
         ['Person In Charge', activity.personInCharge, 'Advance Applied', activity.advanceApplied],
+        ['Advance Date', activity.advanceReceipt?.expectedDate || '', 'Advance Amount', currency(activity.advanceReceipt?.amount || 0)],
         ['Budget', currency(activity.budget), 'Used', currency(used)],
         ['Remaining', currency(remaining), 'Status', remaining < 0 ? 'Over Budget' : 'Within Budget']
       ],
@@ -719,6 +770,12 @@ function HomePage({ settings, form, setForm, createActivity, setPage }) {
               {settings.activityCategories.map(c => <option key={c}>{c}</option>)}
             </select>
           </Field>
+          <Field label="會計編號"><input className={inputClass()} value={form.accountingCode} onChange={e => setForm({ ...form, accountingCode: e.target.value })} placeholder="例如：AC-2026-001" /></Field>
+          <Field label="支出類別">
+            <select className={inputClass()} value={form.expenseCategory} onChange={e => setForm({ ...form, expenseCategory: e.target.value })}>
+              {settings.expenseCategories.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </Field>
           <Field label="活動負責人"><input className={inputClass()} value={form.personInCharge} onChange={e => setForm({ ...form, personInCharge: e.target.value })} /></Field>
           <Field label="有否申請預支">
             <select className={inputClass()} value={form.advanceApplied} onChange={e => setForm({ ...form, advanceApplied: e.target.value })}>
@@ -751,13 +808,15 @@ function EditActivityModal({ activity, settings, onClose, onSave, activities }) 
     endDate: activity.endDate || '',
     budget: activity.budget || '',
     category: activity.category || (settings.activityCategories[0] || '社區活動'),
+    accountingCode: activity.accountingCode || '',
+    expenseCategory: activity.expenseCategory || (settings.expenseCategories[0] || '物資'),
     personInCharge: activity.personInCharge || '',
     advanceApplied: activity.advanceApplied || '沒有'
   })
 
   function submit(e) {
     e.preventDefault()
-    const required = ['activityName', 'activityCode', 'startDate', 'endDate', 'budget', 'category', 'personInCharge']
+    const required = ['activityName', 'activityCode', 'startDate', 'endDate', 'budget', 'category', 'expenseCategory', 'personInCharge']
     if (required.some(k => !String(editForm[k]).trim())) {
       alert('請填妥所有必填欄位')
       return
@@ -811,6 +870,14 @@ function EditActivityModal({ activity, settings, onClose, onSave, activities }) 
               {settings.activityCategories.map(c => <option key={c}>{c}</option>)}
             </select>
           </Field>
+          <Field label="會計編號">
+            <input className={inputClass()} value={editForm.accountingCode} onChange={e => setEditForm({ ...editForm, accountingCode: e.target.value })} />
+          </Field>
+          <Field label="支出類別">
+            <select className={inputClass()} value={editForm.expenseCategory} onChange={e => setEditForm({ ...editForm, expenseCategory: e.target.value })}>
+              {settings.expenseCategories.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </Field>
           <Field label="活動負責人">
             <input className={inputClass()} value={editForm.personInCharge} onChange={e => setEditForm({ ...editForm, personInCharge: e.target.value })} />
           </Field>
@@ -838,7 +905,7 @@ function ManagePage({ activities, settings, setSettings, setActiveId, exportExce
 
   const filtered = useMemo(() => {
     let list = activities.filter(a => {
-      const hit = `${a.activityName} ${a.activityCode} ${a.personInCharge}`.toLowerCase().includes(query.toLowerCase())
+      const hit = `${a.activityName} ${a.activityCode} ${a.accountingCode || ''} ${a.personInCharge}`.toLowerCase().includes(query.toLowerCase())
       const cat = filter === '全部' || a.category === filter
       return hit && cat
     })
@@ -894,7 +961,7 @@ function ManagePage({ activities, settings, setSettings, setActiveId, exportExce
       <div className="grid gap-3 rounded-[2rem] bg-white p-4 shadow-soft md:grid-cols-4">
         <div className="relative md:col-span-2">
           <Search className="absolute left-4 top-3.5 text-slate-400" size={18} />
-          <input className={`${inputClass()} pl-11`} placeholder="搜尋活動名稱、編號、負責人" value={query} onChange={e => setQuery(e.target.value)} />
+          <input className={`${inputClass()} pl-11`} placeholder="搜尋活動名稱、活動編號、會計編號、負責人" value={query} onChange={e => setQuery(e.target.value)} />
         </div>
         <select className={inputClass()} value={filter} onChange={e => setFilter(e.target.value)}>
           <option>全部</option>
@@ -916,6 +983,7 @@ function ManagePage({ activities, settings, setSettings, setActiveId, exportExce
           const used = getUsed(activity)
           const remaining = getRemaining(activity)
           const percent = activity.budget > 0 ? Math.round((used / activity.budget) * 100) : 0
+          const advanceReceipt = activity.advanceReceipt || {}
           return (
             <article key={activity.id} className="rounded-[2rem] bg-white p-5 shadow-soft">
               <div className="flex items-start justify-between gap-3">
@@ -923,6 +991,7 @@ function ManagePage({ activities, settings, setSettings, setActiveId, exportExce
                   <p className="text-xs font-bold uppercase tracking-widest text-blue-600">{activity.activityCode}</p>
                   <h3 className="text-xl font-black text-slate-950">{activity.activityName}</h3>
                   <p className="mt-1 text-sm text-slate-500">{activity.startDate} 至 {activity.endDate} · {activity.category} · {activity.personInCharge}</p>
+                  <p className="mt-1 text-sm text-slate-500">會計編號：{activity.accountingCode || '未填寫'} · 支出類別：{activity.expenseCategory || '未設定'}</p>
                 </div>
                 {remaining < 0 && <span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-black text-rose-700">超支</span>}
               </div>
@@ -936,6 +1005,11 @@ function ManagePage({ activities, settings, setSettings, setActiveId, exportExce
                 <div className={`h-full ${percent > 100 ? 'bg-rose-500' : 'bg-blue-600'}`} style={{ width: `${Math.min(percent, 100)}%` }} />
               </div>
               <p className="mt-2 text-xs text-slate-500">預算使用率：{percent}% · 預支：{activity.advanceApplied}</p>
+              <div className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">
+                <p className="font-black text-slate-800">預支領取</p>
+                <p className="mt-1">預計日期：{advanceReceipt.expectedDate || '未填寫'} · 金額：{advanceReceipt.amount ? currency(advanceReceipt.amount) : '未填寫'}</p>
+                <p className="mt-1 text-xs font-semibold text-slate-500">圖片：{advanceReceipt.imageData ? (advanceReceipt.imageName || '已上傳') : '未上傳'}</p>
+              </div>
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <button onClick={() => setActiveId(activity.id)} className="btn-primary"><Eye size={16} /> 查看</button>
@@ -967,6 +1041,13 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
   const used = getUsed(activity)
   const remaining = getRemaining(activity)
   const percent = activity.budget > 0 ? Math.round((used / activity.budget) * 100) : 0
+  const advanceReceipt = activity.advanceReceipt || {
+    expectedDate: '',
+    amount: '',
+    imageData: '',
+    imageName: '',
+    imageUploadedAt: ''
+  }
 
   const filteredExpenses = useMemo(() => {
     return [...(activity.expenses || [])]
@@ -1079,10 +1160,61 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
     downloadDataUrl(`${safeFileName(expense.receiptNo)}.pdf`, expense.pdfData)
   }
 
+  function updateAdvanceReceipt(patch) {
+    updateActivity({
+      ...activity,
+      advanceReceipt: {
+        ...advanceReceipt,
+        ...patch
+      }
+    })
+  }
+
+  async function uploadAdvanceReceiptImage(file) {
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      flash('請上傳圖片檔案')
+      return
+    }
+    if (file.size > 3 * 1024 * 1024) {
+      flash('圖片不可大於 3MB，請先壓縮後再上傳')
+      return
+    }
+    const dataUrl = await fileToDataUrl(file)
+    updateAdvanceReceipt({
+      imageData: dataUrl,
+      imageName: file.name,
+      imageUploadedAt: new Date().toISOString()
+    })
+    flash('預支領取圖片已上傳')
+  }
+
+  function previewAdvanceReceiptImage() {
+    if (!advanceReceipt.imageData) {
+      flash('尚未上傳預支領取圖片')
+      return
+    }
+    openImagePreview(advanceReceipt.imageData, '預支領取圖片')
+  }
+
+  function downloadAdvanceReceiptImage() {
+    if (!advanceReceipt.imageData) {
+      flash('尚未上傳預支領取圖片')
+      return
+    }
+    downloadDataUrl(advanceReceipt.imageName || `${safeFileName(activity.activityCode)}_advance.jpg`, advanceReceipt.imageData)
+  }
+
   return (
     <div className="space-y-5">
       <button onClick={() => setActiveId(null)} className="inline-flex items-center gap-2 rounded-2xl bg-white px-4 py-3 font-bold text-slate-600 shadow-soft"><ArrowLeft size={18} /> 返回活動列表</button>
       <HeaderBlock title={activity.activityName} subtitle={`${activity.activityCode} · ${activity.startDate} 至 ${activity.endDate} · ${activity.personInCharge}`} />
+
+      <section className="grid gap-3 md:grid-cols-3">
+        <MiniMoney label="會計編號" value={activity.accountingCode || '未填寫'} />
+        <MiniMoney label="活動類別" value={activity.category || '未設定'} />
+        <MiniMoney label="支出類別" value={activity.expenseCategory || '未設定'} />
+      </section>
 
       <section className="grid gap-3 md:grid-cols-4">
         <StatCard label="預算金額" value={currency(activity.budget)} />
@@ -1101,6 +1233,39 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
         <button onClick={() => exportExcel(activity)} className="btn-primary"><Download size={16} /> 生成 Excel</button>
         <button onClick={() => exportPDF(activity)} className="btn-muted"><FileText size={16} /> 生成 PDF</button>
       </div>
+
+      <section className="rounded-[2rem] bg-white p-5 shadow-soft">
+        <div className="mb-4">
+          <h3 className="text-xl font-black">預支領取</h3>
+          <p className="mt-1 text-sm text-slate-500">紀錄預計領取日期、金額及相關圖片；資料會跟隨活動同步到雲端。</p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          <Field label="預計領取日期">
+            <input type="date" className={inputClass()} value={advanceReceipt.expectedDate || ''} onChange={e => updateAdvanceReceipt({ expectedDate: e.target.value })} />
+          </Field>
+          <Field label="預支領取金額">
+            <input type="number" min="0" step="0.01" className={inputClass()} value={advanceReceipt.amount || ''} onChange={e => updateAdvanceReceipt({ amount: e.target.value })} />
+          </Field>
+          <Field label="圖片">
+            <label className="flex min-h-[50px] cursor-pointer items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3 font-black text-slate-600 hover:bg-slate-100">
+              <Upload size={16} /> 上傳圖片
+              <input type="file" accept="image/*" className="hidden" onChange={e => uploadAdvanceReceiptImage(e.target.files?.[0])} />
+            </label>
+          </Field>
+        </div>
+        {advanceReceipt.imageData && (
+          <div className="mt-4 flex flex-col gap-3 rounded-2xl bg-slate-50 p-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="font-bold text-slate-800">{advanceReceipt.imageName || '已上傳圖片'}</p>
+              <p className="text-xs text-slate-500">{advanceReceipt.imageUploadedAt ? `上傳時間：${new Date(advanceReceipt.imageUploadedAt).toLocaleString('zh-HK')}` : '已儲存圖片'}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={previewAdvanceReceiptImage} className="btn-primary"><Eye size={16} /> 預覽</button>
+              <button onClick={downloadAdvanceReceiptImage} className="btn-muted"><Download size={16} /> 下載</button>
+            </div>
+          </div>
+        )}
+      </section>
 
       <section className="rounded-[2rem] bg-white p-5 shadow-soft">
         <h3 className="mb-4 flex items-center gap-2 text-xl font-black"><PlusCircle className="text-blue-600" /> 新增單筆支出</h3>
@@ -1282,8 +1447,17 @@ function SettingsPage({ settings, setSettings, activities, setActivities, requir
         endDate: '2026-06-30',
         budget: 5000,
         category: '小組活動',
+        accountingCode: 'AC-2026-001',
+        expenseCategory: '物資',
         personInCharge: '陳大文',
         advanceApplied: '有',
+        advanceReceipt: {
+          expectedDate: '2026-05-25',
+          amount: 2000,
+          imageData: '',
+          imageName: '',
+          imageUploadedAt: ''
+        },
         expenses: [
           { id: uid(), receiptNo: 'R001', date: '2026-06-01', category: '物資', description: '文具及活動材料', amount: 238.5, payer: '陳大文' },
           { id: uid(), receiptNo: 'R002', date: '2026-06-03', category: '膳食', description: '參加者茶點', amount: 520, payer: '李小明' }
