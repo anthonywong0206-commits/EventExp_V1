@@ -54,7 +54,6 @@ const emptyActivity = {
 const emptyExpense = {
   receiptNo: '',
   date: '',
-  category: '物資',
   description: '',
   amount: '',
   payer: ''
@@ -165,18 +164,48 @@ function parseQuotedLine(line) {
   return matches.map(item => item.replace(/^"|"$/g, '').trim())
 }
 
-function parseExpenseLine(line) {
+function normalizeExpenseDate(input) {
+  const value = String(input || '').trim()
+  const buildDate = (year, month, day) => {
+    const normalized = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`
+    const parsed = new Date(normalized)
+    if (
+      Number.isNaN(parsed.getTime()) ||
+      parsed.getFullYear() !== Number(year) ||
+      parsed.getMonth() + 1 !== Number(month) ||
+      parsed.getDate() !== Number(day)
+    ) {
+      return ''
+    }
+    return normalized
+  }
+
+  const isoMatch = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/)
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch
+    return buildDate(year, month, day)
+  }
+
+  const localMatch = value.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/)
+  if (localMatch) {
+    const [, day, month, year] = localMatch
+    return buildDate(year, month, day)
+  }
+
+  return ''
+}
+
+function parseExpenseLine(line, defaultCategory = '未分類') {
   const parts = parseQuotedLine(line)
-  if (parts.length < 6) return { error: '資料不足，請使用：收據編號 日期 類別 支出描述 金額 支付者' }
+  if (parts.length < 5) return { error: '資料不足，請使用：收據編號 日期 支出描述 金額 支付者' }
 
   const receiptNo = parts[0]
-  const date = parts[1]
-  const category = parts[2]
-  const amountIndex = parts.findIndex((p, i) => i >= 3 && /^-?\d+(\.\d+)?$/.test(p))
+  const date = normalizeExpenseDate(parts[1])
+  const amountIndex = parts.findIndex((p, i) => i >= 2 && /^-?\d+(\.\d+)?$/.test(p))
   if (amountIndex === -1) return { error: '找不到有效金額' }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: '日期格式必須為 YYYY-MM-DD' }
+  if (!date) return { error: '日期格式必須為 DD/MM/YYYY、DD-MM-YYYY 或 YYYY-MM-DD' }
 
-  const description = parts.slice(3, amountIndex).join(' ')
+  const description = parts.slice(2, amountIndex).join(' ')
   const amount = Number(parts[amountIndex])
   const payer = parts.slice(amountIndex + 1).join(' ')
   if (!description || !payer) return { error: '支出描述或支付者不可留空' }
@@ -186,7 +215,7 @@ function parseExpenseLine(line) {
       id: uid(),
       receiptNo,
       date,
-      category,
+      category: defaultCategory,
       description,
       amount,
       payer,
@@ -1066,7 +1095,7 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
   const [bulk, setBulk] = useState('')
   const [preview, setPreview] = useState([])
   const [errors, setErrors] = useState([])
-  const [single, setSingle] = useState({ ...emptyExpense, category: settings.expenseCategories[0] || '物資' })
+  const [single, setSingle] = useState(emptyExpense)
   const [expenseQuery, setExpenseQuery] = useState('')
   const [catFilter, setCatFilter] = useState('全部')
   const [editingId, setEditingId] = useState(null)
@@ -1094,8 +1123,9 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
     const lines = bulk.split('\n').map(x => x.trim()).filter(Boolean)
     const good = []
     const bad = []
+    const defaultCategory = activity.expenseCategory || settings.expenseCategories[0] || '未分類'
     lines.forEach((line, index) => {
-      const parsed = parseExpenseLine(line)
+      const parsed = parseExpenseLine(line, defaultCategory)
       if (parsed.error) bad.push(`第 ${index + 1} 行：${parsed.error}`)
       else good.push(parsed.expense)
     })
@@ -1118,12 +1148,24 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
 
   function addSingle(e) {
     e.preventDefault()
-    if (!single.receiptNo || !single.date || !single.category || !single.description || !single.amount || !single.payer) {
+    if (!single.receiptNo || !single.date || !single.description || !single.amount || !single.payer) {
       flash('請填妥單筆支出資料')
       return
     }
-    updateActivity({ ...activity, expenses: [...(activity.expenses || []), { ...single, id: uid(), amount: Number(single.amount), createdAt: new Date().toISOString() }] })
-    setSingle({ ...emptyExpense, category: settings.expenseCategories[0] || '物資' })
+    updateActivity({
+      ...activity,
+      expenses: [
+        ...(activity.expenses || []),
+        {
+          ...single,
+          id: uid(),
+          category: activity.expenseCategory || settings.expenseCategories[0] || '未分類',
+          amount: Number(single.amount),
+          createdAt: new Date().toISOString()
+        }
+      ]
+    })
+    setSingle(emptyExpense)
     flash('支出已新增')
   }
 
@@ -1347,21 +1389,21 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
 
       <section className="rounded-[2rem] bg-white p-5 shadow-soft">
         <h3 className="mb-4 flex items-center gap-2 text-xl font-black"><PlusCircle className="text-blue-600" /> 新增單筆支出</h3>
-        <form onSubmit={addSingle} className="grid gap-3 md:grid-cols-6">
+        <form onSubmit={addSingle} className="grid gap-3 md:grid-cols-5">
           <input className={inputClass()} placeholder="收據編號" value={single.receiptNo} onChange={e => setSingle({ ...single, receiptNo: e.target.value })} />
           <input type="date" className={inputClass()} value={single.date} onChange={e => setSingle({ ...single, date: e.target.value })} />
-          <select className={inputClass()} value={single.category} onChange={e => setSingle({ ...single, category: e.target.value })}>{settings.expenseCategories.map(c => <option key={c}>{c}</option>)}</select>
           <input className={inputClass()} placeholder="支出描述" value={single.description} onChange={e => setSingle({ ...single, description: e.target.value })} />
           <input type="number" step="0.01" className={inputClass()} placeholder="金額" value={single.amount} onChange={e => setSingle({ ...single, amount: e.target.value })} />
           <input className={inputClass()} placeholder="支付者" value={single.payer} onChange={e => setSingle({ ...single, payer: e.target.value })} />
-          <button className="rounded-2xl bg-blue-600 px-4 py-3 font-black text-white md:col-span-6">新增支出</button>
+          <button className="rounded-2xl bg-blue-600 px-4 py-3 font-black text-white md:col-span-5">新增支出</button>
         </form>
+        <p className="mt-3 text-sm text-slate-500">支出類別會自動使用此活動的「{activity.expenseCategory || '未設定'}」。</p>
       </section>
 
       <section className="rounded-[2rem] bg-white p-5 shadow-soft">
         <h3 className="mb-2 text-xl font-black">批量輸入支出紀錄</h3>
-        <p className="mb-3 text-sm text-slate-500">格式：收據編號 日期 類別 支出描述 金額 支付者。支援雙引號，例如 "大型活動佈置材料"。</p>
-        <textarea className={`${inputClass()} min-h-40 font-mono text-sm`} value={bulk} onChange={e => setBulk(e.target.value)} placeholder={'R001 2026-05-01 物資 文具及活動材料 238.5 陳大文\nR004 2026-05-04 物資 "大型活動佈置材料" 1200 "陳大文"'} />
+        <p className="mb-3 text-sm text-slate-500">格式：收據編號 日期 支出描述 金額 支付者。日期可用 DD/MM/YYYY、DD-MM-YYYY 或 YYYY-MM-DD；支援雙引號，例如 "大型活動佈置材料"。</p>
+        <textarea className={`${inputClass()} min-h-40 font-mono text-sm`} value={bulk} onChange={e => setBulk(e.target.value)} placeholder={'R001 01/05/2026 文具及活動材料 238.5 陳大文\nR004 04/05/2026 "大型活動佈置材料" 1200 "陳大文"'} />
         <div className="mt-3 flex flex-wrap gap-2">
           <button onClick={buildPreview} className="btn-primary">產生預覽</button>
           <button onClick={confirmBulk} className="btn-muted">確認儲存</button>
@@ -1370,8 +1412,8 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
         {!!preview.length && (
           <div className="table-wrap mt-4">
             <table className="w-full min-w-[720px] text-left text-sm">
-              <thead><tr className="border-b bg-slate-50">{['收據編號','日期','類別','支出描述','金額','支付者'].map(h => <th className="p-3" key={h}>{h}</th>)}</tr></thead>
-              <tbody>{preview.map(x => <tr className="border-b" key={x.id}><td className="p-3">{x.receiptNo}</td><td className="p-3">{x.date}</td><td className="p-3">{x.category}</td><td className="p-3">{x.description}</td><td className="p-3">{currency(x.amount)}</td><td className="p-3">{x.payer}</td></tr>)}</tbody>
+              <thead><tr className="border-b bg-slate-50">{['收據編號','日期','支出描述','金額','支付者','類別'].map(h => <th className="p-3" key={h}>{h}</th>)}</tr></thead>
+              <tbody>{preview.map(x => <tr className="border-b" key={x.id}><td className="p-3">{x.receiptNo}</td><td className="p-3">{x.date}</td><td className="p-3">{x.description}</td><td className="p-3">{currency(x.amount)}</td><td className="p-3">{x.payer}</td><td className="p-3">{x.category}</td></tr>)}</tbody>
             </table>
           </div>
         )}
@@ -1405,7 +1447,7 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
                     <>
                       <td className="p-2"><input className={inputClass()} value={draft.receiptNo} onChange={e => setDraft({ ...draft, receiptNo: e.target.value })} /></td>
                       <td className="p-2"><input type="date" className={inputClass()} value={draft.date} onChange={e => setDraft({ ...draft, date: e.target.value })} /></td>
-                      <td className="p-2"><select className={inputClass()} value={draft.category} onChange={e => setDraft({ ...draft, category: e.target.value })}>{settings.expenseCategories.map(c => <option key={c}>{c}</option>)}</select></td>
+                      <td className="p-2 text-sm font-semibold text-slate-600">{draft.category || activity.expenseCategory || '未分類'}</td>
                       <td className="p-2"><input className={inputClass()} value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} /></td>
                       <td className="p-2"><input type="number" className={inputClass()} value={draft.amount} onChange={e => setDraft({ ...draft, amount: e.target.value })} /></td>
                       <td className="p-2"><input className={inputClass()} value={draft.payer} onChange={e => setDraft({ ...draft, payer: e.target.value })} /></td>
