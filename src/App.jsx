@@ -99,6 +99,14 @@ function receiptLabel(expense) {
   return expense.receiptNo || '待輸入'
 }
 
+function sortExpensesByDate(expenses) {
+  return [...(expenses || [])].sort((a, b) => {
+    const dateDiff = new Date(a.date) - new Date(b.date)
+    if (dateDiff !== 0) return dateDiff
+    return String(a.createdAt || a.id || '').localeCompare(String(b.createdAt || b.id || ''))
+  })
+}
+
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -535,7 +543,7 @@ function App() {
       建立時間: x.createdAt || '',
       更新時間: x.updatedAt || ''
     }))
-    const expenses = (activity.expenses || []).map(x => ({
+    const expenses = sortExpensesByDate(activity.expenses).map(x => ({
       收據編號: receiptLabel(x),
       日期: x.date,
       類別: x.category,
@@ -601,7 +609,7 @@ function App() {
       startY: doc.lastAutoTable.finalY + 8,
       theme: 'striped',
       head: [['Receipt No.', 'Date', 'Category', 'Description', 'Amount', 'Payer', 'PDF']],
-      body: (activity.expenses || []).map(x => [
+      body: sortExpensesByDate(activity.expenses).map(x => [
         receiptLabel(x), x.date, x.category, x.description, currency(x.amount), x.payer, x.pdfData ? `${safeFileName(receiptLabel(x))}.pdf` : 'Not uploaded'
       ]),
       styles: { font: 'helvetica', fontSize: 8 },
@@ -1103,17 +1111,18 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
   const [catFilter, setCatFilter] = useState('全部')
   const [editingId, setEditingId] = useState(null)
   const [draft, setDraft] = useState(null)
+  const [receiptRange, setReceiptRange] = useState({ start: '', end: '' })
 
   const used = getUsed(activity)
   const remaining = getRemaining(activity)
   const percent = activity.budget > 0 ? Math.round((used / activity.budget) * 100) : 0
   const advanceReceipts = getAdvanceReceipts(activity)
+  const expenseCount = (activity.expenses || []).length
 
   const filteredExpenses = useMemo(() => {
-    return [...(activity.expenses || [])]
+    return sortExpensesByDate(activity.expenses)
       .filter(x => catFilter === '全部' || x.category === catFilter)
       .filter(x => `${x.receiptNo} ${x.description} ${x.payer}`.toLowerCase().includes(expenseQuery.toLowerCase()))
-      .sort((a, b) => new Date(a.date) - new Date(b.date))
   }, [activity.expenses, expenseQuery, catFilter])
 
   const categoryStats = useMemo(() => {
@@ -1192,6 +1201,40 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
     setEditingId(null)
     setDraft(null)
     flash('支出已更新')
+  }
+
+  function applyReceiptRange() {
+    const start = Number.parseInt(receiptRange.start, 10)
+    const end = Number.parseInt(receiptRange.end, 10)
+    if (!expenseCount) {
+      flash('未有支出紀錄可編號')
+      return
+    }
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start <= 0 || end <= 0 || end < start) {
+      flash('請輸入有效的收據編號範圍')
+      return
+    }
+    const rangeCount = end - start + 1
+    if (rangeCount !== expenseCount) {
+      flash(`範圍數量需要等於單據數目：${expenseCount} 張`)
+      return
+    }
+
+    const prefix = String(activity.expenseCategory || activity.category || '未分類').trim()
+    const sorted = sortExpensesByDate(activity.expenses)
+    const receiptMap = new Map(sorted.map((expense, index) => [
+      expense.id,
+      `${prefix}-HCC-${String(start + index).padStart(3, '0')}`
+    ]))
+
+    updateActivity({
+      ...activity,
+      expenses: activity.expenses.map(expense => ({
+        ...expense,
+        receiptNo: receiptMap.get(expense.id) || expense.receiptNo
+      }))
+    })
+    flash('收據編號已按日期排序套用')
   }
 
   async function uploadReceiptPdf(expenseId, file) {
@@ -1431,6 +1474,21 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
           <div className="flex flex-col gap-2 md:flex-row">
             <input className={inputClass()} placeholder="搜尋收據、描述、支付者" value={expenseQuery} onChange={e => setExpenseQuery(e.target.value)} />
             <select className={inputClass()} value={catFilter} onChange={e => setCatFilter(e.target.value)}><option>全部</option>{settings.expenseCategories.map(c => <option key={c}>{c}</option>)}</select>
+          </div>
+        </div>
+
+        <div className="mb-4 grid gap-3 rounded-2xl bg-slate-50 p-4 md:grid-cols-[1fr_2fr] md:items-end">
+          <MiniMoney label="單據數目" value={`${expenseCount} 張`} />
+          <div>
+            <p className="mb-2 text-sm font-black text-slate-800">收據編號範圍</p>
+            <div className="grid gap-2 md:grid-cols-[auto_1fr_auto_1fr_auto] md:items-center">
+              <span className="text-sm font-bold text-slate-600">由</span>
+              <input className={inputClass()} inputMode="numeric" placeholder="01" value={receiptRange.start} onChange={e => setReceiptRange({ ...receiptRange, start: e.target.value })} />
+              <span className="text-sm font-bold text-slate-600">至</span>
+              <input className={inputClass()} inputMode="numeric" placeholder="06" value={receiptRange.end} onChange={e => setReceiptRange({ ...receiptRange, end: e.target.value })} />
+              <button onClick={applyReceiptRange} className="btn-primary whitespace-nowrap"><Save size={16} /> 套用全部</button>
+            </div>
+            <p className="mt-2 text-xs font-semibold text-slate-500">格式：{activity.expenseCategory || activity.category || '類別'}-HCC-001。套用時會按支出日期排序。</p>
           </div>
         </div>
 
