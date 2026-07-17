@@ -270,6 +270,33 @@ function getAdvanceTotal(activity) {
   return getAdvanceReceipts(activity).reduce((sum, item) => sum + Number(item.amount || 0), 0)
 }
 
+function getQuarterFromMonth(month) {
+  if (month <= 3) return 1
+  if (month <= 6) return 2
+  if (month <= 9) return 3
+  return 4
+}
+
+function getQuarterRange(year, quarter) {
+  const ranges = {
+    1: [`${year}-01-01`, `${year}-03-31`],
+    2: [`${year}-04-01`, `${year}-06-30`],
+    3: [`${year}-07-01`, `${year}-09-30`],
+    4: [`${year}-10-01`, `${year}-12-31`]
+  }
+  return ranges[quarter]
+}
+
+function collectExpenseRows(activities) {
+  return activities.flatMap(activity => (activity.expenses || []).map(expense => ({
+    activityCategory: activity.category || '未分類活動',
+    expenseCategory: expense.category || activity.expenseCategory || '未分類支出',
+    amount: Number(expense.amount || 0),
+    date: expense.date || '',
+    activityName: activity.activityName || ''
+  }))).filter(row => /^\d{4}-\d{2}-\d{2}$/.test(row.date))
+}
+
 function StatCard({ label, value, tone = 'blue', sub }) {
   const toneMap = {
     blue: 'bg-blue-50 text-blue-700 border-blue-100',
@@ -680,6 +707,10 @@ function App() {
             />
           )}
 
+          {page === 'stats' && (
+            <StatsPage activities={activities} />
+          )}
+
           {page === 'settings' && (
             <SettingsPage
               settings={settings}
@@ -782,6 +813,7 @@ function DesktopNav({ page, setPage }) {
   const items = [
     ['home', Home, '首頁'],
     ['manage', FolderKanban, '活動管理'],
+    ['stats', BarChart3, '數據統計'],
     ['settings', Settings, '設定']
   ]
   return <div className="space-y-2">{items.map(([key, Icon, label]) => (
@@ -805,11 +837,12 @@ function BottomNav({ page, setPage }) {
   const items = [
     ['home', Home, '首頁'],
     ['manage', FolderKanban, '活動'],
+    ['stats', BarChart3, '統計'],
     ['settings', Settings, '設定']
   ]
   return (
     <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 pb-[env(safe-area-inset-bottom)] pt-2 shadow-soft backdrop-blur md:hidden">
-      <div className="mx-auto grid max-w-md grid-cols-3 gap-2">
+      <div className="mx-auto grid max-w-md grid-cols-4 gap-2">
         {items.map(([key, Icon, label]) => (
           <button key={key} onClick={() => setPage(key)} className={`rounded-2xl px-3 py-2 text-xs font-bold ${page === key ? 'bg-blue-600 text-white' : 'text-slate-500'}`}>
             <Icon className="mx-auto mb-1" size={20} />
@@ -824,9 +857,10 @@ function BottomNav({ page, setPage }) {
 function HomePage({ settings, form, setForm, createActivity, setPage }) {
   return (
     <div className="space-y-6">
-      <section className="grid gap-4 md:grid-cols-3">
+      <section className="grid gap-4 md:grid-cols-4">
         <ActionCard icon={<PlusCircle />} title="創建活動" text="建立活動檔案、預算及負責人資料。" />
         <button onClick={() => setPage('manage')}><ActionCard icon={<FolderKanban />} title="管理活動" text="查看支出、匯出 Excel / PDF。" /></button>
+        <button onClick={() => setPage('stats')}><ActionCard icon={<BarChart3 />} title="數據統計" text="按年份及季度查看支出數字。" /></button>
         <button onClick={() => setPage('settings')}><ActionCard icon={<ShieldCheck />} title="設定" text="管理密碼、類別及備份還原。" /></button>
       </section>
 
@@ -1569,6 +1603,119 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
         {!filteredExpenses.length && <Empty text="未有支出紀錄。" />}
       </section>
     </div>
+  )
+}
+
+function StatsPage({ activities }) {
+  const expenseRows = useMemo(() => collectExpenseRows(activities), [activities])
+  const years = useMemo(() => {
+    const found = [...new Set(expenseRows.map(row => row.date.slice(0, 4)))].sort((a, b) => Number(b) - Number(a))
+    return found.length ? found : [String(new Date().getFullYear())]
+  }, [expenseRows])
+  const [selectedYear, setSelectedYear] = useState(years[0])
+  const [selectedQuarter, setSelectedQuarter] = useState(1)
+
+  useEffect(() => {
+    if (!years.includes(selectedYear)) setSelectedYear(years[0])
+  }, [years, selectedYear])
+
+  const filteredRows = useMemo(() => {
+    return expenseRows.filter(row => {
+      const [year, month] = row.date.split('-').map(Number)
+      return String(year) === selectedYear && getQuarterFromMonth(month) === selectedQuarter
+    })
+  }, [expenseRows, selectedYear, selectedQuarter])
+
+  const summary = useMemo(() => {
+    const total = filteredRows.reduce((sum, row) => sum + row.amount, 0)
+    return {
+      count: filteredRows.length,
+      total
+    }
+  }, [filteredRows])
+
+  const activityStats = useMemo(() => buildStatsRows(filteredRows, 'activityCategory'), [filteredRows])
+  const expenseStats = useMemo(() => buildStatsRows(filteredRows, 'expenseCategory'), [filteredRows])
+  const [startDate, endDate] = getQuarterRange(selectedYear, selectedQuarter)
+
+  return (
+    <div className="space-y-5">
+      <HeaderBlock title="數據統計" subtitle="按年份及季度查看活動類別與支出類別的支出數字。" />
+
+      <section className="rounded-[2rem] bg-white p-5 shadow-soft">
+        <div className="grid gap-4 md:grid-cols-[240px_1fr] md:items-end">
+          <Field label="年份">
+            <select className={inputClass()} value={selectedYear} onChange={e => setSelectedYear(e.target.value)}>
+              {years.map(year => <option key={year} value={year}>{year}</option>)}
+            </select>
+          </Field>
+          <div>
+            <p className="mb-2 text-sm font-semibold text-slate-700">季度</p>
+            <div className="grid gap-2 sm:grid-cols-4">
+              {[1, 2, 3, 4].map(quarter => (
+                <button
+                  key={quarter}
+                  onClick={() => setSelectedQuarter(quarter)}
+                  className={`rounded-2xl px-4 py-3 text-sm font-black ${selectedQuarter === quarter ? 'bg-blue-600 text-white shadow-soft' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                >
+                  第{quarter}季
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <p className="mt-3 text-sm font-semibold text-slate-500">統計期間：{startDate} 至 {endDate}</p>
+      </section>
+
+      <section className="grid gap-3 md:grid-cols-3">
+        <StatCard label="支出總額" value={currency(summary.total)} />
+        <StatCard label="支出筆數" value={`${summary.count} 筆`} tone="slate" />
+        <StatCard label="活動數目" value={`${new Set(filteredRows.map(row => row.activityName).filter(Boolean)).size} 個`} tone="green" />
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-2">
+        <StatsPanel title="活動類別支出" rows={activityStats} emptyText="此期間未有活動類別支出。" />
+        <StatsPanel title="支出類別支出" rows={expenseStats} emptyText="此期間未有支出類別支出。" />
+      </section>
+    </div>
+  )
+}
+
+function buildStatsRows(rows, key) {
+  const map = {}
+  for (const row of rows) {
+    const label = row[key] || '未分類'
+    if (!map[label]) map[label] = { label, count: 0, total: 0 }
+    map[label].count += 1
+    map[label].total += row.amount
+  }
+  return Object.values(map).sort((a, b) => b.total - a.total)
+}
+
+function StatsPanel({ title, rows, emptyText }) {
+  const max = rows.reduce((peak, row) => Math.max(peak, row.total), 0)
+
+  return (
+    <section className="rounded-[2rem] bg-white p-5 shadow-soft">
+      <h3 className="mb-4 text-xl font-black text-slate-950">{title}</h3>
+      {rows.length ? (
+        <div className="space-y-3">
+          {rows.map(row => (
+            <div key={row.label} className="rounded-2xl border border-slate-100 p-3">
+              <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                <p className="font-black text-slate-800">{row.label}</p>
+                <p className="text-sm font-bold text-slate-500">{row.count} 筆 · {currency(row.total)}</p>
+              </div>
+              <div className="mt-3 h-3 overflow-hidden rounded-full bg-slate-100">
+                <div className="h-full rounded-full bg-blue-600" style={{ width: `${max ? Math.max((row.total / max) * 100, 4) : 0}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <Empty text={emptyText} />
+      )}
+    </section>
   )
 }
 
