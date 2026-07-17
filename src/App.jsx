@@ -107,6 +107,10 @@ function sortExpensesByDate(expenses) {
   })
 }
 
+function receiptPrefix(activity) {
+  return String(activity.expenseCategory || '').trim()
+}
+
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -1220,7 +1224,11 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
       return
     }
 
-    const prefix = String(activity.expenseCategory || activity.category || '未分類').trim()
+    const prefix = receiptPrefix(activity)
+    if (!prefix) {
+      flash('請先在活動資料填寫支出類別')
+      return
+    }
     const sorted = sortExpensesByDate(activity.expenses)
     const receiptMap = new Map(sorted.map((expense, index) => [
       expense.id,
@@ -1488,7 +1496,7 @@ function ActivityDetail({ activity, settings, updateActivity, setActiveId, expor
               <input className={inputClass()} inputMode="numeric" placeholder="06" value={receiptRange.end} onChange={e => setReceiptRange({ ...receiptRange, end: e.target.value })} />
               <button onClick={applyReceiptRange} className="btn-primary whitespace-nowrap"><Save size={16} /> 套用全部</button>
             </div>
-            <p className="mt-2 text-xs font-semibold text-slate-500">格式：{activity.expenseCategory || activity.category || '類別'}-HCC-001。套用時會按支出日期排序。</p>
+            <p className="mt-2 text-xs font-semibold text-slate-500">格式：{receiptPrefix(activity) || '支出類別'}-HCC-001。套用時會按支出日期排序。</p>
           </div>
         </div>
 
